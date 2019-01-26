@@ -54,40 +54,42 @@ module Beaker
         @logger.debug("Creating image")
 
         dockerfile = host['dockerfile']
-        if dockerfile
-          install_and_run_ssh = true
-          container_opts['ExposedPorts'] = {'22/tcp' => {} }
-          # assume that the dockerfile is in the repo and tests are running
-          # from the root of the repo; maybe add support for external Dockerfiles
-          # with external build dependencies later.
-          if File.exist?(dockerfile)
-            dir = File.expand_path(dockerfile).chomp(dockerfile)
-            image = ::Docker::Image.build_from_dir(
-              dir,
-              { 'dockerfile' => dockerfile,
-                :rm => true,
-                :buildargs => buildargs_for(host)
-              }
-            )
+        unless host['docker_image_id']
+          if dockerfile
+            install_and_run_ssh = true
+            container_opts['ExposedPorts'] = {'22/tcp' => {} }
+            # assume that the dockerfile is in the repo and tests are running
+            # from the root of the repo; maybe add support for external Dockerfiles
+            # with external build dependencies later.
+            if File.exist?(dockerfile)
+              dir = File.expand_path(dockerfile).chomp(dockerfile)
+              image = ::Docker::Image.build_from_dir(
+                dir,
+                { 'dockerfile' => dockerfile,
+                  :rm => true,
+                  :buildargs => buildargs_for(host)
+                }
+              )
+            else
+              raise "Unable to find dockerfile at #{dockerfile}"
+            end
+          elsif host['use_image_entry_point']
+            install_and_run_ssh = true
+            df = <<-DF
+              FROM #{host['image']}
+              EXPOSE 22
+            DF
+  
+            cmd = host['docker_cmd']
+            df += cmd if cmd
+  
+            image = ::Docker::Image.build(df, { rm: true, buildargs: buildargs_for(host) })
+  
           else
-            raise "Unable to find dockerfile at #{dockerfile}"
+  
+            image = ::Docker::Image.build(dockerfile_for(host),
+                                          { rm: true, buildargs: buildargs_for(host) })
           end
-        elsif host['use_image_entry_point']
-          install_and_run_ssh = true
-          df = <<-DF
-            FROM #{host['image']}
-            EXPOSE 22
-          DF
-
-          cmd = host['docker_cmd']
-          df += cmd if cmd
-
-          image = ::Docker::Image.build(df, { rm: true, buildargs: buildargs_for(host) })
-
-        else
-
-          image = ::Docker::Image.build(dockerfile_for(host),
-                                        { rm: true, buildargs: buildargs_for(host) })
         end
 
           if host['tag']
@@ -102,6 +104,8 @@ module Beaker
             image.tag({:repo => image_name, :force => true})
             image.push
           end
+        elsif host['docker_image_id']
+          image_name = host['docker_image_id']
         else
           image_name = image.id
         end
@@ -208,7 +212,7 @@ module Beaker
 
         @logger.debug("node available as  ssh -o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=no root@#{ip} -p #{port}")
         host['docker_container_id'] = container.id
-        host['docker_image_id'] = image.id
+        host['docker_image_id'] = image_name
         host['vm_ip'] = container.json["NetworkSettings"]["IPAddress"].to_s
 
       end
